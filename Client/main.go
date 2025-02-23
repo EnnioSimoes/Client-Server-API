@@ -7,12 +7,22 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"time"
 )
 
+func main() {
+	res, err := GetPrice()
+	if err != nil {
+		log.Println(err)
+	}
+	CreatePriceFile(res)
+	println(res)
+}
+
 func GetPrice() (string, error) {
 	ctx := context.Background()
-	ctx, cancel := context.WithTimeout(ctx, time.Millisecond*100) // 300ms
+	ctx, cancel := context.WithTimeout(ctx, time.Millisecond*300) // 300ms
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", "http://127.0.0.1:8080/cotacao", nil)
 	if err != nil {
@@ -36,17 +46,19 @@ func GetPrice() (string, error) {
 		return "", fmt.Errorf("Erro ao ler resposta HTTP: %w", err)
 	}
 
-	var data string
+	var price string
 
-	err = json.Unmarshal(res, &data)
+	err = json.Unmarshal(res, &price)
 
-	return data, nil
+	return price, nil
 }
 
-func main() {
-	res, err := GetPrice()
+func CreatePriceFile(price string) {
+	file, err := os.Create("cotacao.txt")
 	if err != nil {
-		log.Println(err)
+		println("Erro ao criar o arquivo")
 	}
-	println(res)
+	defer file.Close()
+
+	_, err = file.WriteString(fmt.Sprintf("Dólar: %s", price))
 }
