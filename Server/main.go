@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"time"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 type Price struct {
@@ -26,14 +29,21 @@ type Price struct {
 	} `json:"USDBRL"`
 }
 
+type Cotacao struct {
+	Cotacao   string    `json:"cotacao"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 func GetPrice() (string, error) {
 	ctx := context.Background()
 	ctx, cancel := context.WithTimeout(ctx, time.Millisecond*200) // 200ms
 	defer cancel()
+
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://economia.awesomeapi.com.br/json/last/USD-BRL", nil)
 	if err != nil {
 		return "", fmt.Errorf("Erro ao criar requisição: %w", err)
 	}
+
 	resp, err := http.DefaultClient.Do(req)
 
 	if ctx.Err() == context.DeadlineExceeded {
@@ -52,7 +62,6 @@ func GetPrice() (string, error) {
 	}
 
 	var data Price
-
 	err = json.Unmarshal(res, &data)
 	if err != nil {
 		return "", fmt.Errorf("Erro ao decodificar JSON: %w", err)
@@ -65,17 +74,80 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	price, err := GetPrice()
 	if err != nil {
 		log.Println(err)
-		http.Error(w, "Request cancelled", http.StatusRequestTimeout)
+		if err == context.DeadlineExceeded {
+			http.Error(w, "Request timed out", http.StatusRequestTimeout)
+		} else {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
+
+	cotacao := Cotacao{
+		Cotacao:   price,
+		CreatedAt: time.Now(),
+	}
+
+	err = Save(cotacao)
+	if err != nil {
+		log.Println(err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(price)
 	// w.Write([]byte(price))
 }
 
+func Save(cotacao Cotacao) error {
+	db, err := sql.Open("sqlite3", "./cotacoes.db")
+	if err != nil {
+		return fmt.Errorf("Erro ao abrir o banco de dados: %w", err)
+	}
+	defer db.Close()
+
+	stmt, err := db.Prepare("INSERT INTO cotacao(cotacao, created_at) VALUES(?, ?)")
+	if err != nil {
+		return fmt.Errorf("Erro ao preparar a declaração SQL: %w", err)
+	}
+	defer stmt.Close()
+
+	_, err = stmt.Exec(cotacao.Cotacao, cotacao.CreatedAt)
+	if err != nil {
+		return fmt.Errorf("Erro ao executar a declaração SQL: %w", err)
+	}
+	return nil
+}
+
+func CreateDB() error {
+	db, err := sql.Open("sqlite3", "./cotacoes.db")
+	if err != nil {
+		return fmt.Errorf("Erro ao abrir o banco de dados: %w", err)
+	}
+	defer db.Close()
+
+	_, err = db.Exec(`
+        CREATE TABLE IF NOT EXISTS cotacao (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cotacao TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    `)
+	if err != nil {
+		return fmt.Errorf("Erro ao criar a tabela: %w", err)
+	}
+
+	log.Println("Banco criado com sucesso.")
+	return nil
+}
+
 func main() {
+	err := CreateDB()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	http.HandleFunc("/cotacao", handler)
 	http.ListenAndServe(":8080", nil)
-
 }
