@@ -87,10 +87,18 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 
-	err = Save(cotacao)
+	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(ctx, time.Millisecond*10)
+	defer cancel()
+
+	err = Save(cotacao, ctx)
 	if err != nil {
-		log.Println(err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Println("Timeout ao salvar o produto:", err)
+		} else {
+			log.Println(err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		}
 		return
 	}
 
@@ -100,34 +108,28 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	// w.Write([]byte(price))
 }
 
-func Save(cotacao Cotacao) error {
+func Save(cotacao Cotacao, ctx context.Context) error {
 	db, err := sql.Open("sqlite3", "./cotacoes.db")
 	if err != nil {
 		return fmt.Errorf("Erro ao abrir o banco de dados: %w", err)
 	}
 	defer db.Close()
 
-	stmt, err := db.Prepare("INSERT INTO cotacao(cotacao, created_at) VALUES(?, ?)")
+	stmt, err := db.PrepareContext(ctx, "INSERT INTO cotacao(cotacao, created_at) VALUES(?, ?)")
 	if err != nil {
 		return fmt.Errorf("Erro ao preparar a declaração SQL: %w", err)
 	}
 	defer stmt.Close()
 
-	_, err = stmt.Exec(cotacao.Cotacao, cotacao.CreatedAt)
+	_, err = stmt.ExecContext(ctx, cotacao.Cotacao, cotacao.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("Erro ao executar a declaração SQL: %w", err)
 	}
 	return nil
 }
 
-func CreateDB() error {
-	db, err := sql.Open("sqlite3", "./cotacoes.db")
-	if err != nil {
-		return fmt.Errorf("Erro ao abrir o banco de dados: %w", err)
-	}
-	defer db.Close()
-
-	_, err = db.Exec(`
+func CreateDB(db *sql.DB) error {
+	_, err := db.Exec(`
         CREATE TABLE IF NOT EXISTS cotacao (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             cotacao TEXT NOT NULL,
@@ -143,11 +145,20 @@ func CreateDB() error {
 }
 
 func main() {
-	err := CreateDB()
+	db, err := sql.Open("sqlite3", "./cotacoes.db")
+	if err != nil {
+		log.Println("Erro ao abrir o banco de dados: %w", err)
+	}
+	defer db.Close()
+
+	err = CreateDB(db)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	http.HandleFunc("/cotacao", handler)
-	http.ListenAndServe(":8080", nil)
+	err = http.ListenAndServe(":8080", nil)
+	if err != nil {
+		log.Println("Falha ao subir servidor na porta 8080")
+	}
 }
